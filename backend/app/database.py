@@ -21,7 +21,7 @@ def get_db():
 
 def init_db():
     """Initialize database tables and seed default data."""
-    from app.models import report, developer, settings_model, morning_snapshot, email_delivery  # noqa: F401
+    from app.models import report, developer, settings_model, morning_snapshot, email_delivery, snapshot  # noqa: F401
     Base.metadata.create_all(bind=engine)
     _ensure_schema_columns()
     _seed_defaults()
@@ -30,6 +30,8 @@ def init_db():
 def _ensure_schema_columns():
     """Backfill new columns for existing SQLite databases without a destructive migration."""
     with engine.begin() as conn:
+        # Snapshot tables are created by Base.metadata.create_all above. The
+        # legacy ALTER statements below remain for existing installations.
         for table_name, column_name in [
             ("reports", "data_quality_issues"),
             ("morning_snapshots", "data_quality_issues"),
@@ -59,17 +61,20 @@ def _seed_defaults():
         from app.models.developer import Developer
         from app.models.settings_model import AppSetting
 
-        if db.query(Developer).count() == 0:
-            defaults = [
-                "Raj Shinde",
-                "Sriniwas Chamreddy",
-                "Sunny Shankar",
-                "Dinesh Babu",
-                "Ayush Srivastava",
-            ]
-            for name in defaults:
+        defaults = [
+            "Raj Shinde",
+            "Sriniwas Chamreddy",
+            "Sunny Shankar",
+            "Dinesh Babu",
+            "Ayush Srivastava",
+            "Harshit Raj",
+            "Richa Lakshmi",
+        ]
+        existing_names = {developer.name for developer in db.query(Developer).all()}
+        for name in defaults:
+            if name not in existing_names:
                 db.add(Developer(name=name, is_active=True))
-            db.commit()
+        db.commit()
 
         import json
         if db.query(AppSetting).filter_by(key="completed_statuses").count() == 0:
@@ -95,18 +100,19 @@ def _seed_defaults():
             db.commit()
 
         # Fixed developer order
-        if db.query(AppSetting).filter_by(key="developer_order").count() == 0:
-            db.add(AppSetting(
-                key="developer_order",
-                value=json.dumps([
-                    "Raj Shinde",
-                    "Sriniwas Chamreddy",
-                    "Sunny Shankar",
-                    "Dinesh Babu",
-                    "Ayush Srivastava",
-                ])
-            ))
-            db.commit()
+        desired_order = defaults
+        order_setting = db.query(AppSetting).filter_by(key="developer_order").first()
+        if order_setting is None:
+            db.add(AppSetting(key="developer_order", value=json.dumps(desired_order)))
+        else:
+            try:
+                current_order = json.loads(order_setting.value)
+            except Exception:
+                current_order = []
+            order_setting.value = json.dumps(
+                desired_order + [name for name in current_order if name not in desired_order]
+            )
+        db.commit()
 
         email_defaults = {
             "email_recipients": json.dumps(["harsh.mishra_cs.aiml23@gla.ac.in"]),

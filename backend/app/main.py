@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.api import reports, developers, settings, outlook, ai, email
+from app.api import reports, developers, settings, outlook, ai, email, jira, analytics
 from app.database import init_db
 from app.config import settings as app_settings
 from app.services.scheduler import configure_scheduler, shutdown_scheduler
@@ -41,6 +41,8 @@ app.include_router(settings.router)
 app.include_router(outlook.router)
 app.include_router(ai.router)
 app.include_router(email.router)
+app.include_router(jira.router)
+app.include_router(analytics.router)
 
 
 # ── Startup ───────────────────────────────────────────────────────────────────

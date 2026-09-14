@@ -3,6 +3,7 @@ import shutil
 import time
 import uuid
 from html import escape
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -12,9 +13,84 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.config import settings
 from app.models.report import Report
+from app.models.snapshot import Sprint, Snapshot, IssueSnapshot
+from app.calculations.qa import QACalculationEngine
 from app.services.report_service import ReportService
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
+
+
+def _snapshot_payload(snapshot: Snapshot) -> dict:
+    qa_rows = [
+        {
+            "Issue key": issue.issue_key,
+            "Parent": issue.parent_key,
+            "Summary": issue.summary,
+            "Status": issue.status,
+            "Issue Type": issue.issue_type,
+            "Assignee": issue.assignee,
+            "Story Points": issue.story_points,
+            "QA Owner": issue.qa_owner,
+            "QA Story Points": issue.qa_sp,
+        }
+        for issue in snapshot.issues
+    ]
+    qa_result = QACalculationEngine().calculate(qa_rows, list(qa_rows[0]) if qa_rows else [])
+    return {
+        "id": snapshot.id,
+        "sprint_id": snapshot.sprint.id,
+        "sprint": snapshot.sprint.name,
+        "snapshot_date": snapshot.snapshot_date,
+        "snapshot_type": snapshot.snapshot_type,
+        "captured_at": snapshot.captured_at,
+        "overall_scope": snapshot.overall_scope,
+        "overall_completed": snapshot.overall_completed,
+        "overall_remaining": snapshot.overall_remaining,
+        "overall_completion": snapshot.overall_completion,
+        "day1_fixed_scope": snapshot.day1_fixed_scope,
+        "sprint_start": snapshot.sprint.start_date,
+        "sprint_end": snapshot.sprint.end_date,
+        "developers": [
+            {
+                "name": metric.developer_name,
+                "assigned_sp": metric.assigned_sp,
+                "completed_sp": metric.completed_sp,
+                "remaining_sp": metric.remaining_sp,
+                "completion_pct": metric.completion_pct,
+            }
+            for metric in snapshot.developer_metrics
+        ],
+        "qa": {
+            "total_sp": qa_result.total_sp,
+            "completed_sp": qa_result.completed_sp,
+            "members": [
+                {
+                    "name": metric.name,
+                    "assigned_sp": metric.assigned_sp,
+                    "completed_sp": metric.completed_sp,
+                    "remaining_sp": metric.remaining_sp,
+                    "completion_pct": metric.completion_pct,
+                    "task_count": metric.task_count,
+                    "completed_task_count": metric.completed_task_count,
+                }
+                for metric in qa_result.stats.values()
+            ],
+        },
+        "tasks": [
+            {
+                "issue_key": task.issue_key,
+                "parent_key": task.parent_key,
+                "summary": task.summary,
+                "status": task.status,
+                "issue_type": task.issue_type,
+                "owner": task.owner,
+                "story_points": task.story_points,
+                "completed_sp": task.completed_sp,
+                "remaining_sp": task.remaining_sp,
+            }
+            for task in qa_result.tasks
+        ],
+    }
 
 
 def _delete_file_with_retry(file_path: str, retries: int = 5, delay_seconds: float = 0.25) -> None:
@@ -193,6 +269,116 @@ def get_history(skip: int = 0, limit: int = 50, db: Session = Depends(get_db)):
         }
         for r in reports
     ]
+
+
+@router.get("/snapshots")
+def get_snapshot_history(
+    sprint_id: Optional[int] = None,
+    snapshot_date: Optional[str] = None,
+    snapshot_type: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    query = db.query(Snapshot).join(Sprint).order_by(Snapshot.captured_at.desc())
+    if sprint_id is not None:
+        query = query.filter(Snapshot.sprint_id == sprint_id)
+    if snapshot_date:
+        query = query.filter(Snapshot.snapshot_date == snapshot_date)
+    if snapshot_type:
+        query = query.filter(Snapshot.snapshot_type == snapshot_type.upper())
+    return [_snapshot_payload(item) for item in query.all()]
+
+
+@router.get("/snapshots/{snapshot_id}")
+def get_snapshot(snapshot_id: int, db: Session = Depends(get_db)):
+    snapshot = db.query(Snapshot).filter(Snapshot.id == snapshot_id).first()
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="Snapshot not found.")
+    return _snapshot_payload(snapshot)
+
+
+@router.get("/tasks")
+def get_tasks(
+    snapshot_id: Optional[int] = None,
+    search: Optional[str] = None,
+    status: Optional[str] = None,
+    issue_type: Optional[str] = None,
+    developer: Optional[str] = None,
+    qa_member: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+):
+    """Return persisted issue snapshots for audit and task exploration."""
+    limit = min(max(limit, 1), 500)
+    query = db.query(IssueSnapshot).join(Snapshot).join(Sprint)
+    if snapshot_id is not None:
+        query = query.filter(IssueSnapshot.snapshot_id == snapshot_id)
+    if search:
+        term = f"%{search.strip()}%"
+        query = query.filter((IssueSnapshot.issue_key.ilike(term)) | (IssueSnapshot.summary.ilike(term)))
+    if status:
+        query = query.filter(IssueSnapshot.status == status)
+    if issue_type:
+        query = query.filter(IssueSnapshot.issue_type == issue_type)
+    if developer:
+        query = query.filter(IssueSnapshot.developer_owner == developer)
+    if qa_member:
+        query = query.filter(IssueSnapshot.qa_owner == qa_member)
+    total = query.count()
+    rows = query.order_by(IssueSnapshot.issue_key.asc()).offset(skip).limit(limit).all()
+    return {
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+        "tasks": [
+            {
+                "id": row.id,
+                "snapshot_id": row.snapshot_id,
+                "issue_key": row.issue_key,
+                "summary": row.summary,
+                "issue_type": row.issue_type,
+                "parent_key": row.parent_key,
+                "status": row.status,
+                "assignee": row.assignee,
+                "developer_owner": row.developer_owner,
+                "developer_sp": row.developer_sp,
+                "qa_owner": row.qa_owner,
+                "qa_sp": row.qa_sp,
+                "story_points": row.story_points,
+                "completed_sp": row.completed_sp,
+                "remaining_sp": max(0.0, (row.story_points or 0.0) - (row.completed_sp or 0.0)),
+                "sprint": row.snapshot.sprint.name,
+                "snapshot_date": row.snapshot.snapshot_date,
+                "snapshot_type": row.snapshot.snapshot_type,
+            }
+            for row in rows
+        ],
+    }
+
+
+@router.get("/sprints")
+def get_sprint_history(db: Session = Depends(get_db)):
+    sprints = db.query(Sprint).order_by(Sprint.created_at.desc()).all()
+    result = []
+    for sprint in sprints:
+        snapshots = sorted(sprint.snapshots, key=lambda item: item.captured_at or datetime.min, reverse=True)
+        latest = snapshots[0] if snapshots else None
+        result.append({
+            "id": sprint.id,
+            "sprint_key": sprint.sprint_key,
+            "name": sprint.name,
+            "sprint_id": sprint.sprint_id,
+            "start_date": sprint.start_date,
+            "end_date": sprint.end_date,
+            "day1_fixed_scope": sprint.day1_fixed_scope,
+            "snapshot_count": len(snapshots),
+            "current_scope": latest.overall_scope if latest else 0.0,
+            "completed_sp": latest.overall_completed if latest else 0.0,
+            "remaining_sp": latest.overall_remaining if latest else 0.0,
+            "completion_pct": latest.overall_completion if latest else 0.0,
+            "last_updated": latest.captured_at if latest else sprint.created_at,
+        })
+    return result
 
 
 @router.get("/{report_id}")

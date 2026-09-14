@@ -77,6 +77,8 @@ export default function Dashboard() {
     [completedSp, remainingSp]
   )
 
+  const completionRatio = totalScope > 0 ? Math.min(100, Math.max(0, completedSp / totalScope * 100)) : 0
+
   const sendLatestReport = async () => {
     setSending(true)
     setSendStatus('Sending report email...')
@@ -164,18 +166,73 @@ export default function Dashboard() {
         </div>
 
         <div className="card">
-          <h2 className="text-xl font-semibold mb-4">Completed vs Remaining SP</h2>
-          <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie data={pieData} dataKey="value" nameKey="name" innerRadius={50} outerRadius={90} paddingAngle={3}>
-                  {pieData.map((entry, index) => (
-                    <Cell key={entry.name} fill={COLORS[index % COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip formatter={(value: number) => [`${Number(value).toFixed(2)} SP`, 'Story points']} />
-              </PieChart>
-            </ResponsiveContainer>
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-400">Sprint progress</p>
+              <h2 className="mt-1 text-xl font-semibold text-gray-900">Completed vs Remaining</h2>
+            </div>
+            <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-brand-mid">{completionRatio.toFixed(2)}% done</span>
+          </div>
+
+          <div className="mt-5 grid items-center gap-5 sm:grid-cols-[190px_1fr]">
+            <div className="relative h-48 w-full sm:h-52">
+              {totalScope > 0 ? (
+                <>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={pieData}
+                        dataKey="value"
+                        nameKey="name"
+                        innerRadius="64%"
+                        outerRadius="88%"
+                        paddingAngle={3}
+                        startAngle={90}
+                        endAngle={-270}
+                        stroke="none"
+                      >
+                        {pieData.map((entry, index) => (
+                          <Cell key={entry.name} fill={COLORS[index % COLORS.length]} />
+                        ))}
+                      </Pie>
+                      <Tooltip formatter={(value: number) => [`${Number(value).toFixed(2)} SP`, 'Story points']} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                  <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+                    <span className="text-2xl font-bold text-gray-900">{completionRatio.toFixed(0)}%</span>
+                    <span className="text-xs text-gray-500">complete</span>
+                  </div>
+                </>
+              ) : (
+                <div className="flex h-full items-center justify-center rounded-full border-[18px] border-gray-100">
+                  <span className="text-sm font-semibold text-gray-400">No scope</span>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-4">
+              {pieData.map((entry, index) => {
+                const percentage = totalScope > 0 ? entry.value / totalScope * 100 : 0
+                return (
+                  <div key={entry.name}>
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2">
+                        <span className="h-3 w-3 rounded-full" style={{ backgroundColor: COLORS[index] }} />
+                        <span className="text-sm font-medium text-gray-700">{entry.name}</span>
+                      </div>
+                      <span className="text-sm font-bold text-gray-900">{entry.value.toFixed(2)} SP</span>
+                    </div>
+                    <div className="mt-2 h-2 overflow-hidden rounded-full bg-gray-100">
+                      <div className="h-full rounded-full" style={{ width: `${percentage}%`, backgroundColor: COLORS[index] }} />
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500">{percentage.toFixed(2)}% of total scope</p>
+                  </div>
+                )
+              })}
+              <div className="border-t border-gray-100 pt-3 text-sm text-gray-500">
+                Total scope <span className="float-right font-bold text-gray-900">{totalScope.toFixed(2)} SP</span>
+              </div>
+            </div>
           </div>
         </div>
       </div>

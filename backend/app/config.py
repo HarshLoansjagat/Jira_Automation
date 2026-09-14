@@ -14,6 +14,11 @@ class Settings(BaseSettings):
     GMAIL_USER: Optional[str] = None
     GMAIL_APP_PASSWORD: Optional[str] = None
     JIRA_CSV_PATH: Optional[str] = None
+    JIRA_BASE_URL: Optional[str] = None
+    JIRA_EMAIL: Optional[str] = None
+    JIRA_API_TOKEN: Optional[str] = None
+    JIRA_PROJECT_KEY: Optional[str] = None
+    JIRA_BOARD_ID: Optional[str] = None
 
     # Microsoft Graph
     MICROSOFT_CLIENT_ID: Optional[str] = None

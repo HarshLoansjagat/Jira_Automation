@@ -9,6 +9,8 @@ from typing import Dict, List, Tuple
 
 import pandas as pd
 
+from app.datasources.normalized import NormalizedIssue
+
 logger = logging.getLogger(__name__)
 
 # Columns that MUST exist (at least one of each group)
@@ -112,3 +114,47 @@ class JiraCSVDataSource:
 
         logger.info("CSV parsed: %d rows, %d warnings", len(rows), len(warnings))
         return rows, detected_cols, warnings
+
+    @staticmethod
+    def normalize_rows(rows: List[dict]) -> List[NormalizedIssue]:
+        """Map CSV-specific headers into the shared issue contract."""
+        def value(row: dict, *names: str):
+            wanted = {name.lower().replace("_", " ") for name in names}
+            for key, raw in row.items():
+                normalized = str(key).lower().replace("_", " ").strip()
+                if normalized in wanted and raw not in (None, ""):
+                    return raw
+            return None
+
+        def text(raw):
+            return str(raw).strip() if raw not in (None, "", "nan", "None") else None
+
+        def number(raw):
+            try:
+                parsed = float(raw)
+            except (TypeError, ValueError):
+                return None
+            return parsed if parsed >= 0 else None
+
+        return [
+            NormalizedIssue(
+                issue_key=text(value(row, "issue key", "issuekey")) or f"ROW_{index}",
+                summary=text(value(row, "summary")) or "",
+                issue_type=text(value(row, "issue type", "type")) or "",
+                status=text(value(row, "status")) or "",
+                assignee=text(value(row, "assignee")),
+                parent_key=text(value(row, "parent", "parent key", "parent issue key")),
+                sprint_name=text(value(row, "sprint")),
+                story_points=number(value(row, "story points", "story point estimate", "custom field (story point estimate)")),
+                developer_owner_1=text(value(row, "developer owner 1", "developer 1", "custom field (developer 1)")),
+                developer_owner_1_sp=number(value(row, "dev owner 1 sp", "developer 1 sp", "custom field (dev owner 1 sp)")),
+                developer_owner_2=text(value(row, "developer owner 2", "developer 2", "custom field (developer 2)")),
+                developer_owner_2_sp=number(value(row, "dev owner 2 sp", "developer 2 sp", "custom field (dev owner 2 sp)")),
+                developer_owner_3=text(value(row, "developer owner 3", "developer 3", "custom field (developer 3)")),
+                developer_owner_3_sp=number(value(row, "dev owner 3 sp", "developer 3 sp", "custom field (dev owner 3 sp)")),
+                qa_owner=text(value(row, "qa owner", "qa assignee")),
+                qa_story_points=number(value(row, "qa story points", "qa sp")),
+                raw=row,
+            )
+            for index, row in enumerate(rows)
+        ]

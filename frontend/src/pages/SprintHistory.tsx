@@ -1,0 +1,11 @@
+import { useEffect, useState } from 'react'
+import api from '../api/client'
+
+interface Sprint { id: number; name: string; sprint_id?: string; start_date?: string; end_date?: string; day1_fixed_scope?: number; snapshot_count: number; current_scope: number; completed_sp: number; remaining_sp: number; completion_pct: number; last_updated?: string }
+
+export default function SprintHistory() {
+  const [sprints, setSprints] = useState<Sprint[]>([])
+  const [loading, setLoading] = useState(true)
+  useEffect(() => { api.get('/reports/sprints').then(({ data }) => setSprints(data)).finally(() => setLoading(false)) }, [])
+  return <div className="space-y-6"><div><p className="text-sm uppercase tracking-wide text-gray-500">Persistence</p><h1 className="text-3xl font-bold text-gray-900">Sprint History</h1><p className="mt-1 text-gray-600">Historical values are loaded from persisted snapshots.</p></div><div className="card overflow-x-auto">{loading ? <p>Loading sprint history...</p> : sprints.length === 0 ? <p className="py-12 text-center text-gray-500">No sprint snapshots saved yet.</p> : <table className="min-w-[900px] w-full text-sm"><thead><tr className="bg-gray-100 text-left"><th className="px-3 py-3">Sprint</th><th className="px-3 py-3">Start</th><th className="px-3 py-3">Day-1 Scope</th><th className="px-3 py-3">Current Scope</th><th className="px-3 py-3">Completed</th><th className="px-3 py-3">Remaining</th><th className="px-3 py-3">Completion</th><th className="px-3 py-3">Snapshots</th></tr></thead><tbody>{sprints.map((sprint) => <tr key={sprint.id} className="border-t"><td className="px-3 py-3 font-semibold">{sprint.name}<span className="block text-xs font-normal text-gray-500">{sprint.sprint_id || 'Jira ID unavailable'}</span></td><td className="px-3 py-3">{sprint.start_date || 'N/A'}</td><td className="px-3 py-3">{sprint.day1_fixed_scope?.toFixed(2) ?? 'N/A'}</td><td className="px-3 py-3">{sprint.current_scope.toFixed(2)}</td><td className="px-3 py-3">{sprint.completed_sp.toFixed(2)}</td><td className="px-3 py-3">{sprint.remaining_sp.toFixed(2)}</td><td className="px-3 py-3">{sprint.completion_pct.toFixed(2)}%</td><td className="px-3 py-3">{sprint.snapshot_count}</td></tr>)}</tbody></table>}</div></div>
+}

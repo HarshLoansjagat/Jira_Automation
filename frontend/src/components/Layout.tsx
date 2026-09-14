@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, Upload, History, Users, Settings, BarChart3 } from 'lucide-react'
+import { LayoutDashboard, Upload, History, Users, Settings, BarChart3, FlaskConical, ListChecks, Clock3, Activity } from 'lucide-react'
 import type { ReactNode } from 'react'
 
 const nav = [
@@ -7,6 +7,10 @@ const nav = [
   { to: '/upload',    icon: Upload,          label: 'Upload CSV' },
   { to: '/history',   icon: History,         label: 'Reports' },
   { to: '/developers',icon: Users,           label: 'Developers' },
+  { to: '/qa',        icon: FlaskConical,    label: 'QA' },
+  { to: '/tasks',     icon: ListChecks,      label: 'Tasks' },
+  { to: '/sprint-history', icon: Clock3,     label: 'Sprint History' },
+  { to: '/analytics',  icon: Activity,       label: 'Analytics' },
   { to: '/settings',  icon: Settings,        label: 'Settings' },
 ]
 

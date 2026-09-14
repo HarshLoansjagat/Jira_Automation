@@ -27,6 +27,7 @@ from typing import List, Optional
 from sqlalchemy.orm import Session
 
 from app.calculations.engine import SprintCalculationEngine, SprintCalculationResult
+from app.calculations.qa import QACalculationEngine, QAResult
 from app.calculations.morning_eod import (
     compute_movement,
     SprintMovementResult,
@@ -38,6 +39,7 @@ from app.models.developer import Developer
 from app.models.morning_snapshot import MorningSnapshot
 from app.models.report import Report
 from app.models.settings_model import AppSetting
+from app.models.snapshot import Sprint, Snapshot, IssueSnapshot, DeveloperMetric, QAMetric
 from app.services.excel_service import ExcelService
 
 logger = logging.getLogger(__name__)
@@ -81,6 +83,7 @@ class ReportService:
         # ── Parse the primary (EOD / morning-only) file ──────────────────
         rows_primary, detected_cols, parse_warnings = self.csv_source.parse(file_path)
         primary_result = engine.calculate(rows_primary, detected_cols)
+        primary_qa = QACalculationEngine(self._get_qa_completed_statuses()).calculate(rows_primary, detected_cols)
         sprint_label = primary_result.sprint_name or "Sprint"
         sprint_id = primary_result.sprint_id
         sprint_start = primary_result.sprint_start or sprint_start or self._get_setting_str("sprint_start")
@@ -92,6 +95,20 @@ class ReportService:
             self._save_sprint_baseline(sprint_key, day1_fixed_scope)
 
         extra_warnings: List[str] = list(parse_warnings)
+        self._persist_snapshot(
+            sprint_key=self._snapshot_sprint_key(sprint_label, sprint_id, sprint_start),
+            sprint_label=sprint_label,
+            sprint_id=sprint_id,
+            sprint_start=sprint_start,
+            sprint_end=sprint_end,
+            report_date=report_date,
+            snapshot_type=snapshot_type,
+            result=primary_result,
+            qa_result=primary_qa,
+            rows=rows_primary,
+            developer_order=developer_order,
+            day1_fixed_scope=day1_fixed_scope,
+        )
 
         # ================================================================
         # SCENARIO 1 — MORNING only
@@ -134,6 +151,7 @@ class ReportService:
                 sprint_end=sprint_end,
                 developer_order=developer_order,
                 scenario="MORNING",
+                qa_result=primary_qa,
             )
 
             report = self._save_report(
@@ -175,7 +193,22 @@ class ReportService:
         if morning_file_path and os.path.exists(morning_file_path):
             rows_morning, _, _ = self.csv_source.parse(morning_file_path)
             morning_result = engine.calculate(rows_morning, detected_cols)
+            morning_qa = QACalculationEngine(self._get_qa_completed_statuses()).calculate(rows_morning, detected_cols)
             morning_source = "uploaded"
+            self._persist_snapshot(
+                sprint_key=self._snapshot_sprint_key(sprint_label, sprint_id, sprint_start),
+                sprint_label=sprint_label,
+                sprint_id=sprint_id,
+                sprint_start=sprint_start,
+                sprint_end=sprint_end,
+                report_date=report_date,
+                snapshot_type="MORNING",
+                result=morning_result,
+                qa_result=morning_qa,
+                rows=rows_morning,
+                developer_order=developer_order,
+                day1_fixed_scope=day1_fixed_scope,
+            )
 
             # Same-file warning (spec §22)
             if (
@@ -241,6 +274,7 @@ class ReportService:
             sprint_end=sprint_end,
             developer_order=developer_order,
             scenario="EOD",
+            qa_result=primary_qa,
         )
 
         report = self._save_report(
@@ -270,6 +304,7 @@ class ReportService:
             developer_order=developer_order,
             scenario="EOD",
             morning_source=morning_source,
+            qa_result=primary_qa,
         )
 
     def validate_csv(self, file_path: str) -> dict:
@@ -437,6 +472,9 @@ class ReportService:
         # defined by the report specification.
         return ["Ready for QA", "QA Testing in Progress", "Done/ Live"]
 
+    def _get_qa_completed_statuses(self) -> List[str]:
+        return ["Done/ Live", "QA Testing Completed", "QA Done"]
+
     def _get_developer_order(self) -> List[str]:
         setting = self.db.query(AppSetting).filter_by(key="developer_order").first()
         if setting:
@@ -477,6 +515,129 @@ class ReportService:
     ) -> str:
         identity = sprint_id or sprint_start or sprint_label
         return f"day1_fixed_scope::{re.sub(r'[^A-Za-z0-9_-]+', '_', identity)}"
+
+    @staticmethod
+    def _snapshot_sprint_key(
+        sprint_label: str,
+        sprint_id: Optional[str],
+        sprint_start: Optional[str],
+    ) -> str:
+        identity = sprint_id or sprint_start or sprint_label
+        return re.sub(r"[^A-Za-z0-9_-]+", "_", identity).strip("_") or "sprint"
+
+    def _persist_snapshot(
+        self,
+        sprint_key: str,
+        sprint_label: str,
+        sprint_id: Optional[str],
+        sprint_start: Optional[str],
+        sprint_end: Optional[str],
+        report_date: str,
+        snapshot_type: str,
+        result: SprintCalculationResult,
+        qa_result: QAResult,
+        rows: List[dict],
+        developer_order: List[str],
+        day1_fixed_scope: Optional[float],
+    ) -> Snapshot:
+        sprint = self.db.query(Sprint).filter_by(sprint_key=sprint_key).first()
+        if sprint is None:
+            sprint = Sprint(
+                sprint_key=sprint_key,
+                name=sprint_label,
+                sprint_id=sprint_id,
+                start_date=sprint_start,
+                end_date=sprint_end,
+                day1_fixed_scope=day1_fixed_scope,
+            )
+            self.db.add(sprint)
+            self.db.flush()
+        else:
+            sprint.name = sprint_label
+            sprint.sprint_id = sprint_id or sprint.sprint_id
+            sprint.start_date = sprint_start or sprint.start_date
+            sprint.end_date = sprint_end or sprint.end_date
+            if sprint.day1_fixed_scope is None and day1_fixed_scope is not None:
+                sprint.day1_fixed_scope = day1_fixed_scope
+
+        snapshot = (
+            self.db.query(Snapshot)
+            .filter_by(sprint_id=sprint.id, snapshot_date=report_date, snapshot_type=snapshot_type)
+            .first()
+        )
+        if snapshot is None:
+            snapshot = Snapshot(sprint_id=sprint.id, snapshot_date=report_date, snapshot_type=snapshot_type)
+            self.db.add(snapshot)
+            self.db.flush()
+        else:
+            for collection in (snapshot.issues, snapshot.developer_metrics, snapshot.qa_metrics):
+                for item in list(collection):
+                    self.db.delete(item)
+            self.db.flush()
+
+        snapshot.overall_scope = result.total_scope
+        snapshot.overall_completed = result.total_completed_sp
+        snapshot.overall_remaining = result.total_remaining_sp
+        snapshot.overall_completion = result.overall_completion_pct
+        snapshot.day1_fixed_scope = day1_fixed_scope
+
+        allocations_by_issue: dict[str, tuple[str, float]] = {}
+        for allocation in result.allocations:
+            if allocation.developer:
+                previous = allocations_by_issue.get(allocation.issue_key)
+                allocations_by_issue[allocation.issue_key] = (
+                    allocation.developer,
+                    round((previous[1] if previous else 0.0) + (allocation.sp or 0.0), 2),
+                )
+        qa_by_issue = {task.issue_key: task for task in qa_result.tasks}
+        persisted_issue_keys: set[str] = set()
+        for index, row in enumerate(rows):
+            issue_key = SprintCalculationEngine._get(row, ["Issue key", "issue key", "Issue Key"]) or f"ROW_{index}"
+            if issue_key in persisted_issue_keys:
+                continue
+            persisted_issue_keys.add(issue_key)
+            status = SprintCalculationEngine._get(row, ["Status", "status"]) or ""
+            story_points = SprintCalculationEngine._parse_sp(SprintCalculationEngine._story_point_value(row))
+            allocation = allocations_by_issue.get(issue_key)
+            qa_task = qa_by_issue.get(issue_key)
+            self.db.add(IssueSnapshot(
+                snapshot_id=snapshot.id,
+                issue_key=issue_key,
+                parent_key=SprintCalculationEngine._get(row, ["Parent", "Parent key", "Parent Issue Key"]),
+                summary=SprintCalculationEngine._get(row, ["Summary", "summary"]),
+                status=status,
+                issue_type=SprintCalculationEngine._get(row, ["Issue Type", "Type"]),
+                assignee=SprintCalculationEngine._get(row, ["Assignee", "assignee"]),
+                developer_owner=allocation[0] if allocation else None,
+                developer_sp=allocation[1] if allocation else None,
+                qa_owner=qa_task.owner if qa_task else None,
+                qa_sp=qa_task.story_points if qa_task else None,
+                story_points=story_points,
+                completed_sp=(story_points if story_points is not None and status.lower() in {s.lower() for s in self._get_completed_statuses()} else 0.0),
+            ))
+        for stats in result.ordered_developer_stats(developer_order):
+            self.db.add(DeveloperMetric(
+                snapshot_id=snapshot.id,
+                developer_name=stats.name,
+                assigned_sp=stats.assigned_sp,
+                completed_sp=stats.completed_sp,
+                remaining_sp=stats.remaining_sp,
+                completion_pct=stats.completion_pct,
+            ))
+        for stats in qa_result.stats.values():
+            self.db.add(QAMetric(
+                snapshot_id=snapshot.id,
+                qa_member=stats.name,
+                assigned_sp=stats.assigned_sp,
+                completed_sp=stats.completed_sp,
+                remaining_sp=stats.remaining_sp,
+                completion_pct=stats.completion_pct,
+                task_count=stats.task_count,
+                completed_task_count=stats.completed_task_count,
+            ))
+        self.db.commit()
+        self.db.refresh(snapshot)
+        return snapshot
 
     def _get_sprint_baseline(self, sprint_key: str) -> Optional[float]:
         return self._get_setting_float(sprint_key)
@@ -565,7 +726,13 @@ class ReportService:
 
     @staticmethod
     def _dev_data_to_json(result: SprintCalculationResult, order: List[str]) -> list:
-        ordered = result.ordered_developer_stats(order)
+        from app.calculations.engine import DeveloperStats
+        ordered = []
+        for name in order:
+            ordered.append(result.developer_stats.get(name) or DeveloperStats(name=name))
+        ordered.extend(
+            stats for name, stats in result.developer_stats.items() if name not in order
+        )
         return [
             {
                 "name": s.name,
@@ -589,6 +756,7 @@ class ReportService:
         developer_order: List[str],
         scenario: str,
         morning_source: str = "none",
+        qa_result: Optional[QAResult] = None,
     ) -> dict:
         has_morning = morning_result is not None
 
@@ -596,7 +764,8 @@ class ReportService:
         for name in developer_order:
             eod_stats = eod_result.developer_stats.get(name)
             if eod_stats is None:
-                continue
+                from app.calculations.engine import DeveloperStats
+                eod_stats = DeveloperStats(name=name)
             mov = movement.developer_movements.get(name)
             devs.append({
                 "name": name,
@@ -643,6 +812,7 @@ class ReportService:
                     })
 
         data_quality_issues = report.data_quality_issues or eod_result.data_quality_issues or []
+        qa_result = qa_result or QAResult()
         return {
             "report_id": report.id,
             "sprint": report.sprint,
@@ -678,6 +848,41 @@ class ReportService:
             "developers": devs,
             "warnings": eod_result.warnings + extra_warnings,
             "data_quality_issues": data_quality_issues,
+            "qa": {
+                "total_tasks": len(qa_result.tasks),
+                "total_sp": qa_result.total_sp,
+                "completed_sp": qa_result.completed_sp,
+                "remaining_sp": qa_result.remaining_sp,
+                "completion_pct": qa_result.completion_pct,
+                "in_progress_tasks": sum(not task.is_completed for task in qa_result.tasks),
+                "completed_tasks": sum(task.is_completed for task in qa_result.tasks),
+                "members": [
+                    {
+                        "name": stats.name,
+                        "assigned_sp": stats.assigned_sp,
+                        "completed_sp": stats.completed_sp,
+                        "remaining_sp": stats.remaining_sp,
+                        "completion_pct": stats.completion_pct,
+                        "task_count": stats.task_count,
+                        "completed_task_count": stats.completed_task_count,
+                    }
+                    for stats in qa_result.stats.values()
+                ],
+                "tasks": [
+                    {
+                        "issue_key": task.issue_key,
+                        "parent_key": task.parent_key,
+                        "summary": task.summary,
+                        "issue_type": task.issue_type,
+                        "owner": task.owner,
+                        "story_points": task.story_points,
+                        "completed_sp": task.completed_sp,
+                        "remaining_sp": task.remaining_sp,
+                        "status": task.status,
+                    }
+                    for task in qa_result.tasks
+                ],
+            },
         }
 
 

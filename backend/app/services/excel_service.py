@@ -34,6 +34,7 @@ from openpyxl.utils import get_column_letter
 
 from app.calculations.engine import SprintCalculationResult
 from app.calculations.morning_eod import SprintMovementResult
+from app.calculations.qa import QAResult
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,7 @@ class ExcelService:
         sprint_end: Optional[str] = None,
         developer_order: Optional[List[str]] = None,
         scenario: str = "EOD",  # "MORNING" | "EOD"
+        qa_result: Optional[QAResult] = None,
     ) -> None:
         order = developer_order or self.DEVELOPER_ORDER
         template_path = getattr(settings, "REPORT_TEMPLATE_PATH", "")
@@ -265,6 +267,54 @@ class ExcelService:
         ws[f"H{total_row}"] = '=IFERROR(G20-D20,"N/A")'
         for column in ("D", "G", "H"):
             ws[f"{column}{total_row}"].number_format = "0.00%"
+
+        # Section 3 is appended below the established development layout so
+        # existing Excel consumers and reference cells remain unchanged.
+        qa_row = 23
+        ws.merge_cells(f"A{qa_row}:H{qa_row}")
+        ws[f"A{qa_row}"] = "3. QA Team Progress"
+        ws[f"A{qa_row}"].font = _font(bold=True, size=12, color=WHITE)
+        ws[f"A{qa_row}"].fill = _fill(MID_BLUE)
+        ws[f"A{qa_row}"].alignment = _center()
+        ws[f"A{qa_row}"].border = _thin_border()
+        qa_headers = [
+            "QA Member", "Morning Assigned QA SP", "Morning Completed QA SP",
+            "Morning QA %", "EOD Assigned QA SP", "EOD Completed QA SP",
+            "EOD QA %", "Movement",
+        ]
+        for col_idx, header in enumerate(qa_headers, start=1):
+            cell = ws.cell(row=qa_row + 1, column=col_idx)
+            cell.value = header
+            cell.font = _font(bold=True, color=WHITE, size=10)
+            cell.fill = _fill(HEADER_BG)
+            cell.alignment = _center(wrap=True)
+            cell.border = _thin_border()
+        qa_stats = list((qa_result.stats if qa_result else {}).values())
+        for index, stats in enumerate(qa_stats, start=qa_row + 2):
+            ws.cell(index, 1).value = stats.name
+            ws.cell(index, 2).value = "N/A"
+            ws.cell(index, 3).value = "N/A"
+            ws.cell(index, 4).value = "N/A"
+            ws.cell(index, 5).value = round(stats.assigned_sp, 2)
+            ws.cell(index, 6).value = round(stats.completed_sp, 2)
+            ws.cell(index, 7).value = f'=IFERROR(F{index}/E{index},"N/A")'
+            ws.cell(index, 8).value = "N/A"
+            ws.cell(index, 7).number_format = "0.00%"
+            for column in range(1, 9):
+                ws.cell(index, column).border = _thin_border()
+                ws.cell(index, column).alignment = _center(wrap=True)
+        qa_total_row = qa_row + 2 + len(qa_stats)
+        ws.cell(qa_total_row, 1).value = "Total QA Team"
+        ws.cell(qa_total_row, 5).value = f"=SUM(E{qa_row + 2}:E{qa_total_row - 1})" if qa_stats else 0
+        ws.cell(qa_total_row, 6).value = f"=SUM(F{qa_row + 2}:F{qa_total_row - 1})" if qa_stats else 0
+        ws.cell(qa_total_row, 7).value = f'=IFERROR(F{qa_total_row}/E{qa_total_row},"N/A")'
+        ws.cell(qa_total_row, 7).number_format = "0.00%"
+        for column in range(1, 9):
+            cell = ws.cell(qa_total_row, column)
+            cell.fill = _fill(TOTAL_GREEN)
+            cell.font = _font(bold=True, color=BLACK, size=10)
+            cell.border = _thin_border()
+            cell.alignment = _center(wrap=True)
 
         ws.freeze_panes = "A7"
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
